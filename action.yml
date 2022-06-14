@@ -1,0 +1,102 @@
+name: "Firebase deploy"
+description: "Deploys Firebase hosting and optionally functions."
+inputs:
+  env-secrets:
+    description: "Environment secrets."
+    required: true
+  node-version:
+    description: "Version of node used on project."
+    required: false
+    default: "16"
+  fetch-depth:
+    description: "Number of commits to fetch. 0 indicates all history for all branches and tags."
+    required: false
+    default: "0"
+  firebase-token:
+    description: "Firebase token."
+    required: true
+  target:
+    description: "Target for hosting if we have multiple Hosting sites (e.g. production)."
+    required: false
+    default: ""
+  hosting-message:
+    description: "Message for hosting."
+    required: false
+    default: ""
+  functions:
+    description: "Do we use Firebase functions"
+    required: false
+    default: "false"
+runs:
+  using: "composite"
+  steps:
+    - name: Set firebase hosting command depending if we have a target
+      id: hosting-command
+      uses: haya14busa/action-cond@v1
+      with:
+        cond: ${{ inputs.target != '' }}
+        if_true: deploy --only hosting:${{ inputs.target }} --message \"${{ inputs.hosting-message }}\" --project ${{ github.workflow }}
+        if_false: deploy --only hosting --message \"${{ inputs.hosting-message }}\" --project ${{ github.workflow }}
+
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: ${{ inputs.fetch-depth }}
+
+    - name: Install node
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Download environment secrets
+      uses: RollyPeres/base64-to-path@v1
+      with:
+        filePath: ${{ github.workspace }}/.env.production
+        encodedString: ${{ inputs.env-secrets }}
+
+    - name: Cache node modules
+      id: yarn-cache
+      uses: actions/cache@v3
+      env:
+        cache-name: cache-node-modules
+      with:
+        path: "**/node_modules"
+        key: ${{ runner.os }}-${{ matrix.deployment-type }}-${{ env.cache-name }}-${{ hashFiles('**/yarn.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.deployment-type }}-${{ env.cache-name }}-
+          ${{ runner.os }}-${{ matrix.deployment-type }}-
+          ${{ runner.os }}-
+
+    - name: Install packages
+      shell: bash
+      if: steps.yarn-cache.outputs.cache-hit != 'true'
+      run: yarn install
+
+    - name: Install function packages
+      shell: bash
+      if: inputs.functions == 'true' && steps.yarn-cache.outputs.cache-hit != 'true'
+      run: yarn --cwd "functions" install
+
+    - name: Run Next build
+      shell: bash
+      run: yarn build
+
+    - name: Run function build
+      shell: bash
+      if: inputs.functions == 'true'
+      run: yarn --cwd "functions" build
+
+    - name: Deploy Firebase hosting
+      uses: w9jds/firebase-action@master
+      with:
+        args: ${{ steps.hosting-command.outputs.value }}
+      env:
+        FIREBASE_TOKEN: ${{ inputs.firebase-token }}
+
+    - name: Deploy Firebase functions
+      uses: w9jds/firebase-action@master
+      if: inputs.functions == 'true'
+      with:
+        args: deploy --only functions --project ${{ github.workflow }}
+      env:
+        FIREBASE_TOKEN: ${{ inputs.firebase-token }}
